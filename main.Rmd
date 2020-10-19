@@ -1,0 +1,284 @@
+---
+title: "main"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# import required packages
+library(readr)
+library(tidyr)
+library(stringr)
+library(dplyr)
+library(shiny)
+library(plotly)
+library(caret)
+library(factoextra)
+library(mgcv)   ## package for fitting GAM models
+```
+
+```{r}
+# Trump tweet data modified by logistic regression
+Trump <- read.csv("trump_tweet_mod.csv")
+Trump
+```
+```{r}
+# convert array type to numeric type
+Trump$logistic.regression <- str_extract(Trump$logistic.regression, "\\d+\\.*\\d*")
+Trump$logistic.regression <- as.numeric(Trump$logistic.regression)
+head(Trump)
+```
+References: https://stackoverflow.com/questions/19252663/extracting-decimal-numbers-from-a-string
+Extracting decimal number from string
+```{r}
+# S&P 500 index data obtained from yahoo finance
+SandP <- read.csv("SandP.csv")
+head(SandP)
+```
+```{r}
+# tidy data
+SandP <- separate(SandP, Date, into = c("Year", "Month", "Day"), sep = "-")
+```
+
+
+```{r}
+# convert day character into string
+SandP$Year <- as.numeric(SandP$Year)
+SandP$Month <- as.numeric(SandP$Month)
+SandP$Day <- as.numeric(SandP$Day)
+```
+
+```{r}
+# reassign a data frame for data representation
+head(SandP)
+df <- SandP[1:4] # Put Year ~ Open data
+df$Close <- SandP$Close # Put Close data
+df$Difference <- SandP$Open -SandP$Close 
+df$Volume <- SandP$Volume # Put Volume data
+df
+```
+
+```{r}
+# grouping Trump's tweet data set by year, year and month, and hour
+# summary for each data group
+dfY <- Trump %>% group_by(year) %>% summarize(tweets = length(tweet), sentiment = sum(pos.or.neg)/length(pos.or.neg))
+dfYM <- Trump %>% group_by(year, month) %>% summarize(tweets = length(tweet), sentiment = sum(pos.or.neg)/length(pos.or.neg))
+dfH <- Trump %>% group_by(hour) %>% summarize(tweets = length(tweet), sentiment = sum(pos.or.neg)/length(pos.or.neg))
+dfL <- Trump %>% group_by(year, month) %>% summarize(tweet = length(tweet), log = sum(logistic.regression) / length(logistic.regression),
+                                                     sentiment = sum(pos.or.neg)/length(pos.or.neg))
+dfL
+```
+```{r}
+# grouping SandP data set by year and month
+# summary for each data group
+SandPYM <- SandP %>% group_by(Year, Month) %>% summarize(mean_open = mean(Open), mean_close = mean(Close), 
+                                                         variance = sum(abs(Open - Close)),
+                                                         mean_volume = mean(Volume))
+head(SandPYM)
+```
+
+
+```{r}
+# Join data frames Trump and SandP
+SandP$YMD <- paste(SandP$Year, SandP$Month)
+SandP$YMD <- paste(SandP$YMD, SandP$Day)
+Trump$YMD <- paste(Trump$year, Trump$month)
+Trump$YMD <- paste(Trump$YMD, Trump$date)
+SandP_mod <- SandP[9:10]
+SandP_mod$Variance <- abs(SandP$Open - SandP$Close)
+SandP_mod$Close <- SandP$Close
+Trump_mod <- as.data.frame(Trump$YMD)
+colnames(Trump_mod)[1] <- "YMD"
+Trump_mod$log <- Trump$logistic.regression
+Trump_mod$sentiment <- Trump$pos.or.neg
+df <- full_join(Trump_mod, SandP_mod, by = "YMD")
+df <- df[2:6]
+df <- na.omit(df)
+dim(df)
+```
+
+```{r}
+head(df)
+```
+```{r}
+pairs(df)
+p <- prcomp(df, scale = TRUE)
+fviz_eig(p)
+fviz_pca_var(p,repel = TRUE)
+```
+```{r}
+# model to compute the mean_volume for each 
+fit.control <- trainControl(method = "repeatedcv", number = 5, repeats = 10)
+
+# linear model taking all four predictors
+set.seed(123)
+fit1 <- train(Volume ~ ., data = df, method = "lm", trControl = fit.control)
+
+# linear model taking Variance, sentiment, and log as predictors
+set.seed(123)
+fit2 <- train(Volume ~ Variance + sentiment + log, data = df, 
+              method = "lm", trControl = fit.control)
+
+# gam model
+set.seed(123)
+fit3 <- train(Volume ~ Variance + sentiment + log, data = df, 
+              method = "gam", trControl = fit.control)
+```
+
+```{r}
+resamps <- resamples(list(LM1 = fit1,
+                          LM2 = fit2,
+                          LM3 = fit3))
+
+summary(resamps)
+```
+
+```{r}
+fit1$finalModel
+```
+```{r}
+fit2$finalModel
+```
+
+```{r}
+fit3$finalModel
+```
+
+```{r}
+coef(fit2$finalModel)
+```
+
+```{r}
+# linear model taking all four predictors
+set.seed(123)
+fit1 <- train(Close ~ ., data = df, method = "lm", trControl = fit.control)
+# linear model taking Variance, sentiment, and log as predictors
+fit2 <- train(Close ~ Variance + sentiment + log, data = df, 
+              method = "lm", trControl = fit.control)
+# gam model taking Variance, sentiment, and log as predictors
+fit3 <- train(Close ~ Variance + sentiment + log, data = df, 
+              method = "gam", trControl = fit.control)
+
+```
+
+```{r}
+rs = resamps <- resamples(list
+                          (LM1 = fit1,
+                          LM2 = fit2,
+                          LM3 = fit3))
+
+summary(resamps)
+```
+
+```{r}
+summary(fit3)
+```
+
+```{r}
+# plot for year vs tweets
+fig <- plot_ly(
+  x = dfY$year,
+  y = dfY$tweets,
+  type = "bar"
+)
+dfYM$YM <- paste(dfYM$year, dfYM$month, sep = "-")
+# plot for year and month vs sentiment score
+fig1 <- plot_ly(
+  x = dfYM$YM,
+  y = dfYM$sentiment,
+  type = "bar"
+)
+# plot for year and month vs tweets
+fig2 <- plot_ly(
+  x = dfYM$YM,
+  y = dfYM$tweets,
+  type = "bar"
+)
+# plot for hour vs sentiment score
+fig3 <- plot_ly(
+  x = dfH$hour,
+  y = dfH$sentiment,
+  type = "bar"
+)
+# plot for hour vs  tweets 
+fig4 <- plot_ly(
+  x = dfH$hour,
+  y = dfH$tweets,
+  type = "bar"
+)
+# plot for year and month vs S&P index
+fig5 <- plot_ly(
+  x = paste(SandP$Year, SandP$Month, sep = "-"),
+  y = SandP$Close,
+  type = "bar"
+)
+# plot for year and month vs volume traded
+fig6 <- plot_ly(
+  x = paste(SandP$Year, SandP$Month, sep = "-"),
+  y = SandP$Volume,
+  type = "bar"
+)
+# plot for year and month vs log_score
+fig7 <- plot_ly(
+  x = paste(dfL$year, dfL$month, sep = "-"),
+  y = dfL$log,
+  type = "bar"
+)
+```
+
+
+```{r}
+ui <- fluidPage(
+  titlePanel("Sentiment Analysis on Trump's Tweet and its Impact on Stock Price"),
+  sidebarLayout(
+    sidebarPanel(
+    # Put a discription about what this application does
+    h5("This tweet analysis uses logistic regression to figure out 
+       Trump's sentiment on economic subject by using more than 2200 tweets during 
+       his presidency and these influence on S&P 500 index"),
+    h5("In this app, user can select following options"),
+    # Put a brief introduction about what are the options users can do
+    h6("1. Plot a simple figure for the dynamics of tweets and S&P index"),
+    h6("2. Plot the Trump's tweets influence on S&P index using linear model"),
+    strong("Choose subjects to plot"),
+    # Select box for part 1. Users can choose one of seven choices about what to display
+    selectInput("var", 
+                h3("Select box"), 
+                choices = list("time vs sentiment score",
+                               "time vs tweets",
+                               "sentiment score for each hour",
+                               "tweets for each hour",
+                               "time vs S&P index",
+                               "time vs Volume traded",
+                               "time vs log_score"
+                               )),
+  ),
+  mainPanel(
+    plotlyOutput(outputId = "fig")
+  ),
+  ),
+)
+server <- function(input, output){
+  output$fig <- renderPlotly({
+    if(input$var == "time vs sentiment score")
+      fig1
+    else if (input$var == "time vs tweets")
+      fig2
+    else if (input$var == "sentiment score for each hour")
+      fig3
+    else if (input$var == "tweets for each hour")
+      fig4
+    else if (input$var == "time vs S&P index")
+      fig5
+    else if (input$var == "time vs Volume traded")
+      fig6
+    else
+      fig7
+  })
+}
+
+shinyApp(ui = ui, server = server)
+```
